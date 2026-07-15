@@ -9,6 +9,7 @@ if not os.path.exists(file_path):
     print('An error occured')
 else:
     src = cv2.imread(file_path)
+    print(src.shape)
 
     if src is None:
         print('OpenCV image opening error')
@@ -59,8 +60,22 @@ else:
                 running_mode=VisionRunningMode.IMAGE
             )
 
+            output = src.copy()
+
             with FaceLandmarker.create_from_options(options) as landmarker:
                 mp_image = mp.Image.create_from_file(file_path)
                 facemarker_results = landmarker.detect(mp_image)
 
-            print(facemarker_results)
+            imageHeight, imageWidth, channels = src.shape
+            for landmark in facemarker_results.face_landmarks[0]:
+                x = int(landmark.x * imageWidth)
+                y = int(landmark.y * imageHeight)
+                cv2.circle(img=output, center=(x, y), radius=1, color=(0, 0, 255), thickness=-1)
+            
+            print(output.shape)
+            
+            cv2.namedWindow("Face Landmarks", cv2.WINDOW_NORMAL)
+            cv2.resizeWindow("Face Landmarks", (imageHeight, imageWidth))
+            cv2.imshow("Face Landmarks", output)
+            cv2.waitKey(0)
+            cv2.destroyAllWindows()
