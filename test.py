@@ -1,10 +1,8 @@
-from PIL import Image
+import time
 import os
 import cv2
 import numpy as np
 import mediapipe as mp
-from mediapipe.tasks.python import vision
-import matplotlib.pyplot as plt
 
 file_path = input("Copy and paste the image's file path: ").strip('"')
 if not os.path.exists(file_path):
@@ -78,6 +76,12 @@ else:
             scaledHeight = imageHeight * scale
             output = cv2.resize(src, (int(scaledWidth), int(scaledHeight)))
             kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+            OUTER_LIPS = [
+                61, 146, 91, 181, 84, 17,
+                314, 405, 321, 375, 291,
+                308, 324, 318, 402, 317,
+                14, 87, 178, 88, 95, 78
+                ]
 
             with FaceLandmarker.create_from_options(optionsFaceLandmark) as landmarker:
                 mp_image = mp.Image.create_from_file(file_path)
@@ -86,26 +90,53 @@ else:
             for landmark in facemarker_results.face_landmarks[0]:
                 x = int(landmark.x * scaledWidth)
                 y = int(landmark.y * scaledHeight)
-                cv2.circle(img=output, center=(x, y), radius=1, color=(0, 0, 255), thickness=-1)
+            
+            OUTER_LIPS_POINTS = [
+                (
+                    int(facemarker_results.face_landmarks[0][OUTER_LIPS[i]].x * scaledWidth), 
+                    int(facemarker_results.face_landmarks[0][OUTER_LIPS[i]].y * scaledHeight)
+                )
+                for i in range(len(OUTER_LIPS))
+            ]
+            mouth_y = sum(y for x, y in OUTER_LIPS_POINTS) // len(OUTER_LIPS_POINTS)                           
 
             with ImageSegmenter.create_from_options(optionsImageSegmenter) as segmentor:
                 segmented_result = segmentor.segment(mp_image)
                 confidence_mask = segmented_result.confidence_masks[0]
                 alpha = (confidence_mask).numpy_view()
                 alpha = cv2.resize(alpha, (int(scaledWidth), int(scaledHeight)), interpolation=cv2.INTER_LINEAR)
-                alpha = cv2.GaussianBlur(alpha, (5, 5), 0)
+                alpha = cv2.GaussianBlur(alpha, (11, 11), 0)
                 
                 binary_mask = (alpha > 0.3).astype(np.uint8)
                 cv2.morphologyEx(binary_mask, cv2.MORPH_CLOSE, kernel, iterations=1, dst=binary_mask)
                 cv2.morphologyEx(binary_mask, cv2.MORPH_OPEN, kernel, iterations=1, dst=binary_mask)
+                binary_mask = cv2.erode(binary_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)), iterations=1)
                 alpha *= binary_mask
 
+                blurred_output = cv2.GaussianBlur(output, (21, 21), 0)
                 alpha = alpha[:, :, np.newaxis]
-                foreground = (output.astype(np.float32) * alpha).astype(np.uint8)
-                background = (output.astype(np.float32) * (1 - alpha)).astype(np.uint8)
-                
-            cv2.imshow("Mask", alpha)
-            cv2.imshow("Foreground", foreground)
-            cv2.imshow("Background", background)
-            cv2.waitKey(0)
-            cv2.destroyAllWindows()
+                background_blur = blurred_output * (1 - alpha)
+                person_mask = (output.astype(np.float32) * alpha).astype(np.uint8)
+
+            above_mouth = np.zeros_like(person_mask)
+            below_mouth = np.zeros_like(person_mask)
+            above_mouth[:mouth_y, :, :] = person_mask[:mouth_y, :, :]
+            below_mouth[mouth_y:, :, :] = person_mask[mouth_y:, :, :]
+            offsets = list(range(20)) + list(range(20, -1, -1))
+            below_mask = np.any(below_mouth != 0, axis=-1)
+            for offset in offsets:
+                startTime = time.time()
+                frame = background_blur.copy()
+                frame[below_mask] = below_mouth[below_mask]
+                translationMatrix = np.float32([
+                    [1, 0, 0],
+                    [0, 1, -offset]
+                ])
+                shifted_top = cv2.warpAffine(above_mouth, translationMatrix, (output.shape[1], output.shape[0]))
+                top_mask = np.any(shifted_top != 0, axis=-1)
+                frame[top_mask] = shifted_top[top_mask]
+                cv2.imshow('frame', np.clip(frame, 0, 255).astype(np.uint8))
+                cv2.waitKey(1)
+                endTime = time.time()
+                print(endTime - startTime)
+            
